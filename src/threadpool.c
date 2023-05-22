@@ -1,11 +1,47 @@
-
 #include "threadpool.h"
 #include "utils.h"
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
+#ifdef __linux__
 #include <sys/queue.h>
 #include <unistd.h>
+#else
+#define STAILQ_ENTRY(type)                         \
+    struct {                                       \
+        struct type* stqe_next; /* next element */ \
+    }
+
+#define STAILQ_HEAD(name, type)                                   \
+    struct name {                                                 \
+        struct type*  stqh_first; /* first element */             \
+        struct type** stqh_last;  /* addr of last next element */ \
+    }
+
+#define STAILQ_FIRST(head) ((head)->stqh_first)
+#define STAILQ_END(head) NULL
+#define STAILQ_EMPTY(head) (STAILQ_FIRST(head) == STAILQ_END(head))
+#define STAILQ_NEXT(elm, field) ((elm)->field.stqe_next)
+
+#define STAILQ_INIT(head)                             \
+    do {                                              \
+        STAILQ_FIRST((head)) = NULL;                  \
+        (head)->stqh_last    = &STAILQ_FIRST((head)); \
+    } while (0)
+
+#define STAILQ_INSERT_TAIL(head, elm, field)                    \
+    do {                                                        \
+        STAILQ_NEXT((elm), field) = NULL;                       \
+        *(head)->stqh_last        = (elm);                      \
+        (head)->stqh_last         = &STAILQ_NEXT((elm), field); \
+    } while (0)
+
+#define STAILQ_REMOVE_HEAD(head, field)                                                \
+    do {                                                                               \
+        if ((STAILQ_FIRST((head)) = STAILQ_NEXT(STAILQ_FIRST((head)), field)) == NULL) \
+            (head)->stqh_last = &STAILQ_FIRST((head));                                 \
+    } while (0)
+#endif
 
 /* Binary semaphore */
 typedef struct {
@@ -36,7 +72,7 @@ typedef struct {
 } thread;
 
 /* Threadpool */
-typedef struct {
+typedef struct threadpool {
     thread*         threads;             /* pointer to threads        */
     volatile size_t num_threads_alive;   /* threads currently alive   */
     volatile size_t num_threads_working; /* threads currently working */
@@ -65,8 +101,7 @@ static void bsem_post(bsem_t* bsem);
 static void bsem_post_all(bsem_t* bsem);
 static void bsem_wait(bsem_t* bsem);
 
-threadpool* tpool_create(int num_threads) {
-    ASSERT(num_threads >= 0);
+threadpool* tpool_create(size_t num_threads) {
 
     threadpool* pool = (threadpool*)malloc(sizeof(threadpool));
     if (pool == NULL) {
@@ -76,9 +111,9 @@ threadpool* tpool_create(int num_threads) {
     pool->threads_keepalive   = true;
     pool->num_threads_alive   = 0;
     pool->num_threads_working = 0;
-    pool->num_queue           = MAX(1, num_threads / cpu_get_num());
+    pool->num_queue           = MAX((size_t)1, num_threads / cpu_get_num());
     pool->queues              = (jobqueue*)malloc(sizeof(jobqueue) * pool->num_queue);
-    int i;
+    size_t i;
     for (i = 0; i < pool->num_queue; ++i)
         if (jobqueue_init(&pool->queues[i]))
             goto jobqueue_failed;
@@ -99,7 +134,7 @@ threadpool* tpool_create(int num_threads) {
         err("Condition variable init failed, err code %d", ret);
         goto cond_failed;
     }
-    int n;
+    size_t n;
     for (n = 0; n < num_threads; n++) {
         if (thread_init(pool, &pool->threads[n], n))
             goto threads_init_failed;
@@ -138,13 +173,13 @@ int tpool_add_work(threadpool* pool, void (*fcn)(void*), void* arg) {
     newjob->function = fcn;
     newjob->arg      = arg;
 
-    unsigned int seed = time(0);
-    jobqueue_push(&pool->queues[rand_r(&seed) % pool->num_queue], newjob);
+    unsigned long seed = time(0);
+    jobqueue_push(&pool->queues[xorshift_plus32(&seed) % pool->num_queue], newjob);
     return 0;
 }
 
 static bool all_queue_empty(threadpool* pool) {
-    for (int i = 0; i < pool->num_queue; ++i)
+    for (size_t i = 0; i < pool->num_queue; ++i)
         if (!STAILQ_EMPTY(&pool->queues[i].head))
             return false;
     return true;
@@ -165,16 +200,15 @@ void tpool_destroy(threadpool* pool) {
     pool->threads_keepalive = false;
 
     while (pool->num_threads_alive) {
-        for (int i = 0; i < pool->num_queue; ++i)
+        for (size_t i = 0; i < pool->num_queue; ++i)
             bsem_post_all(&pool->queues[i].has_jobs);
-        sleep(1);
     }
 
     pthread_cond_destroy(&pool->threads_all_idle);
     pthread_mutex_destroy(&pool->thcount_lock);
     free(pool->threads);
 
-    for (int i = 0; i < pool->num_queue; ++i)
+    for (size_t i = 0; i < pool->num_queue; ++i)
         jobqueue_destroy(&pool->queues[i]);
     free(pool->queues);
     free(pool);
@@ -218,7 +252,7 @@ static void* thread_loop(thread* t) {
     pthread_mutex_lock(&pool->thcount_lock);
     ++pool->num_threads_alive;
     pthread_mutex_unlock(&pool->thcount_lock);
-    int index = t->id % pool->num_queue;
+    size_t index = t->id % pool->num_queue;
     while (pool->threads_keepalive) {
         bsem_wait(&pool->queues[index].has_jobs);
 
@@ -229,7 +263,7 @@ static void* thread_loop(thread* t) {
 
             node_t* job = jobqueue_pop(&pool->queues[index]);
             if (job == NULL) {
-                for (int i = 0; i < pool->num_queue; ++i)
+                for (size_t i = 0; i < pool->num_queue; ++i)
                     if (i != index) {
                         job = jobqueue_steal(&pool->queues[i]);
                         if (job) {
@@ -321,7 +355,7 @@ static void jobqueue_destroy(jobqueue* jq) {
     bsem_destroy(&jq->has_jobs);
 }
 
-static int bsem_init(bsem_t* bsem, int value) {
+static int bsem_init(bsem_t* bsem, bool value) {
     EXPECT("Binary semaphore can take only values 1 or 0", value == 0 || value == 1);
     int ret = pthread_mutex_init(&bsem->mutex, NULL);
     if (ret) {

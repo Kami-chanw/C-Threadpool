@@ -36,8 +36,8 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <pthread.h>
 #include <stdio.h>
+#include <pthread.h>
 
 // stuffs
 void assert_failure(char const* file, int line, char const* func, char const* msg);
@@ -48,9 +48,13 @@ int cpu_get_num(void);
 int cpu_bind_thread(pthread_t t, int core);
 
 // cache
-int cache_L1_size(void);
-int cache_L1_linesize(void);
-int cache_L2_linesize(void);
+typedef unsigned long cache_size_t;
+cache_size_t          cache_L1_size(void);
+cache_size_t          cache_L1_linesize(void);
+cache_size_t          cache_L2_linesize(void);
+
+// pseudo random generator
+unsigned long xorshift_plus32(unsigned long* seed);
 
 #ifdef __cplusplus
 }
