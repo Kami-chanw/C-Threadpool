@@ -3,7 +3,7 @@
 #include <math.h>
 #include "threadpool.h"
  
-#define NUM_THREADS 1
+#define NUM_THREADS 4
  
 typedef struct {
     double sum;
@@ -24,14 +24,12 @@ void sum_range(void* arg) {
 int main() {
     const int num_tasks = 8;
  
-    // 创建线程池
     threadpool* pool = tpool_create(NUM_THREADS);
     if (!pool) {
         fprintf(stderr, "Failed to create thread pool\n");
         return 1;
     }
     
-    // 构造参数列表
     SumArgs args_list[num_tasks];
     int i, chunk_size = 1000;
 
@@ -40,28 +38,22 @@ int main() {
         args_list[i].end = args_list[i].start + chunk_size - 1;
     }
 
-    // 添加任务到线程池
     for (i = 0; i < num_tasks; i++) {
         if (tpool_add_work(pool, sum_range, &args_list[i])) {
             fprintf(stderr, "Failed to add work to thread pool\n");
             return 1;
         }
-        printf("here %d", i);
     }
  
-    // // 等待所有任务完成
     tpool_wait(pool);
  
-    // 统计结果
     double total_sum = 0.0;
     for (i = 0; i < num_tasks; i++) {
         total_sum += args_list[i].sum;
     }
  
-    // 输出结果
     printf("Total sum: %lf\n", total_sum);
  
-    // 销毁线程池
     tpool_destroy(pool);
  
     return 0;

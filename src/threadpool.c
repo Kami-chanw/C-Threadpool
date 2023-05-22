@@ -397,7 +397,7 @@ static void bsem_post_all(bsem_t* bsem) {
 
 static void bsem_wait(bsem_t* bsem) {
     pthread_mutex_lock(&bsem->mutex);
-    while (bsem->v)
+    while (!bsem->v)
         pthread_cond_wait(&bsem->cond, &bsem->mutex);
     bsem->v = false;
     pthread_mutex_unlock(&bsem->mutex);
